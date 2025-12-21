@@ -1,8 +1,11 @@
 using Microsoft.EntityFrameworkCore;
 using WatermelonApi;
 using Testcontainers.MsSql;
+using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddOpenApi();
 
 // 1. Initialize and Start the Container
 var dbContainer = new MsSqlBuilder()
@@ -21,6 +24,8 @@ builder.Services.AddScoped<WatermelonService>();
 
 var app = builder.Build();
 
+
+
 // 3. Seed the Database on Startup
 using (var scope = app.Services.CreateScope())
 {
@@ -29,6 +34,8 @@ using (var scope = app.Services.CreateScope())
     await SeedData(context);
 }
 
+app.MapOpenApi();
+app.MapScalarApiReference();
 app.MapControllers();
 app.Run();
 

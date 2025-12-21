@@ -1,0 +1,6 @@
+@WatermelonApi_HostAddress = http://localhost:5117
+
+GET {{WatermelonApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

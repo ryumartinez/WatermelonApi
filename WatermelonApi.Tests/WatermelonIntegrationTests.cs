@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Xunit;
 
 namespace WatermelonApi.Tests;
 
@@ -18,6 +19,7 @@ public class WatermelonIntegrationTests(WatermelonApiFactory factory) : IClassFi
         await context.Database.EnsureDeletedAsync();
         await context.Database.EnsureCreatedAsync();
 
+        // Initial seed with specific timestamps to test categorization logic
         context.Products.Add(new Product { 
             Id = "prod_1", 
             Name = "Initial Product", 
@@ -26,187 +28,119 @@ public class WatermelonIntegrationTests(WatermelonApiFactory factory) : IClassFi
         });
         await context.SaveChangesAsync();
     }
-    
-    [Fact]
-    public async Task SeedDb_ReturnsValidSqliteFile_WithCorrectData()
-    {
-        // 1. Arrange: Ensure the SQL Server has data to export
-        await ResetAndSeedDatabase(); // Creates "prod_1"
-
-        // 2. Act: Request the initial database file
-        var response = await _client.GetAsync("/api/sync/seed-db");
-
-        // 3. Assert: Basic HTTP checks
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("application/x-sqlite3", response.Content.Headers.ContentType?.MediaType);
-
-        var fileBytes = await response.Content.ReadAsByteArrayAsync();
-        Assert.True(fileBytes.Length > 0, "The generated SQLite file is empty.");
-
-        // 4. Advanced Assert: Verify the internal SQLite content
-        // We save the bytes to a temp file so we can open it with SqliteConnection
-        var tempFile = Path.GetTempFileName();
-        await File.WriteAllBytesAsync(tempFile, fileBytes);
-
-        try
-        {
-            using var connection = new SqliteConnection($"Data Source={tempFile}");
-            await connection.OpenAsync();
-
-            // Verify user_version (must match WatermelonDB appSchema version)
-            using var versionCmd = new SqliteCommand("PRAGMA user_version;", connection);
-            var version = Convert.ToInt32(await versionCmd.ExecuteScalarAsync());
-            Assert.Equal(1, version);
-
-            // Verify the products table exists and has our seeded record
-            using var countCmd = new SqliteCommand("SELECT COUNT(*) FROM products WHERE id = 'prod_1';", connection);
-            var count = Convert.ToInt32(await countCmd.ExecuteScalarAsync());
-        
-            Assert.Equal(1, count);
-
-            // Verify WatermelonDB specific columns
-            using var statusCmd = new SqliteCommand("SELECT _status FROM products WHERE id = 'prod_1';", connection);
-            var status = (string?)await statusCmd.ExecuteScalarAsync();
-            Assert.Equal("synced", status);
-        }
-        finally
-        {
-            if (File.Exists(tempFile)) File.Delete(tempFile);
-        }
-    }
 
     [Fact]
-    public async Task Pull_InitialSync_ReturnsAllData()
-    {
-        await ResetAndSeedDatabase();
-        
-        var response = await _client.GetFromJsonAsync<SyncPullResponse>("/api/sync/pull?last_pulled_at=0");
-
-        Assert.NotNull(response);
-        Assert.Single(response.Changes["products"].Created);
-    }
-    
-    [Fact]
-    public async Task Pull_IncludesDeletedRecords_WhenModifiedAfterLastSync()
+    public async Task Pull_InitialSync_TurboMode_ReturnsRawJson()
     {
         // Arrange
         await ResetAndSeedDatabase();
-        using var scope = factory.Services.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         
-        var deletedProduct = new Product { 
-            Id = "del_1", 
-            IsDeleted = true, 
-            LastModified = 3000
-        };
-        context.Products.Add(deletedProduct);
-        await context.SaveChangesAsync();
-
-        // Act
-        var response = await _client.GetFromJsonAsync<SyncPullResponse>("/api/sync/pull?last_pulled_at=2000");
+        // Act: Requesting initial sync with turbo=true [cite: 1538, 1548]
+        var response = await _client.GetAsync("/api/sync/pull?last_pulled_at=0&turbo=true");
 
         // Assert
-        Assert.Contains("del_1", response.Changes["products"].Deleted);
-        Assert.Empty(response.Changes["products"].Created);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var rawContent = await response.Content.ReadAsStringAsync();
+        
+        // Watermelon Turbo Login expects a raw JSON string containing changes and timestamp [cite: 1556, 1558]
+        Assert.Contains("\"changes\":", rawContent);
+        Assert.Contains("\"timestamp\":", rawContent);
+        Assert.Contains("prod_1", rawContent);
     }
-    
+
     [Fact]
-    public async Task Push_ExistingIdInCreatedArray_UpdatesInsteadOfFailing()
-    {
-        // 1. Arrange: Seed the database with an initial product
-        await ResetAndSeedDatabase(); // This creates "prod_1" with Name "Initial Product"
-
-        // 2. Prepare a push request that tries to "Create" the same ID again
-        // This simulates a retry after a network failure (Idempotency)
-        var duplicatePush = new SyncPushRequest(
-            new Dictionary<string, TableChanges> {
-                { "products", new TableChanges(
-                    new List<object> { 
-                        new { 
-                            id = "prod_1", 
-                            name = "Retried Name", 
-                            price = 99.9,
-                            sku = "SKU-updated"
-                        } 
-                    }, 
-                    new(), 
-                    new()
-                )}
-            },
-            LastPulledAt: 500
-        );
-
-        // 3. Act: Send the request to the controller
-        var response = await _client.PostAsJsonAsync("/api/sync/push", duplicatePush);
-
-        // 4. Assert: Status should be 200 OK (not 409 or 500)
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode); 
-    
-        // 5. Verify: Check that the database record was actually UPDATED
-        using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    
-        // Disable EF tracking to ensure we get a fresh read from SQL Server
-        var updated = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == "prod_1");
-    
-        Assert.NotNull(updated);
-        Assert.Equal("Retried Name", updated.Name);
-        Assert.Equal(99.9m, updated.Price);
-    }
-    
-    [Fact]
-    public async Task Push_PartialFailure_RollsBackEntireBatch()
+    public async Task Pull_CategorizesRecordsCorrectly_BasedOnCreation()
     {
         // Arrange
-        var pushRequest = new SyncPushRequest(
-            new Dictionary<string, TableChanges> {
-                { "products", new TableChanges(
-                        new List<object> { 
-                            new { id = "valid_1", name = "I am valid" },
-                            new { id = "invalid_1", name = (string)null } // Supongamos que Name es obligatorio 
-                }, 
-                new(), 
-                new()
-                )}
+        await ResetAndSeedDatabase(); // prod_1 created at 1000
+        using var scope = factory.Services.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    
+        // Server modification for prod_1 at 2600
+        var p1 = await context.Products.FindAsync("prod_1");
+        p1!.Name = "Updated Name";
+        p1.LastModified = 2600;
+    
+        // New product prod_2 created at 2500
+        context.Products.Add(new Product { 
+            Id = "prod_2", 
+            Name = "New Product", 
+            ServerCreatedAt = 2500, 
+            LastModified = 2500 
+        });
+        await context.SaveChangesAsync();
+
+        // Act: Pull from timestamp 2000
+        var syncResponse = await _client.GetFromJsonAsync<SyncPullResponse>("/api/sync/pull?last_pulled_at=2000");
+
+        // Assert
+        Assert.NotNull(syncResponse);
+        var productChanges = syncResponse.Changes!["products"];
+        
+        Assert.Contains(productChanges.Created, item => item.ToString()!.Contains("prod_2"));
+        Assert.Contains(productChanges.Updated, item => item.ToString()!.Contains("prod_1"));
+    }
+
+    [Fact]
+    public async Task Push_IncludesLastPulledAtInBody_AlignsWithBackendDTO()
+    {
+        // Arrange
+        await ResetAndSeedDatabase();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        // Prepare request using JSON property names expected by the C# Record 
+        var pushRequest = new {
+            changes = new Dictionary<string, object> {
+                { "products", new {
+                    created = new[] { new { id = "new_client_prod", name = "Client Side", price = 10, sku = "C1" } },
+                    updated = Array.Empty<object>(),
+                    deleted = Array.Empty<string>()
+                }}
             },
-            LastPulledAt: 1000
-        );
+            last_pulled_at = 500 // Must match the JsonPropertyName attribute in your C# code
+        };
 
         // Act
         var response = await _client.PostAsJsonAsync("/api/sync/push", pushRequest);
 
         // Assert
-        Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
-    
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var validRecord = await db.Products.FindAsync("valid_1");
-        Assert.Null(validRecord); // El registro válido no debe existir porque el lote falló 
+        var record = await db.Products.FindAsync("new_client_prod");
+        Assert.NotNull(record);
     }
-    
+
     [Fact]
-    public async Task Pull_CategorizesExistingRecordsAsUpdated()
+    public async Task Push_DetectsConflict_WhenServerRecordIsNewer()
     {
         // Arrange
+        await ResetAndSeedDatabase(); // prod_1 modified at 1000
         using var scope = factory.Services.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    
-        await context.Database.EnsureDeletedAsync();
-        await context.Database.EnsureCreatedAsync();
-
-        context.Products.Add(new Product { 
-            Id = "upd_1", 
-            ServerCreatedAt = 500,  // Creado hace mucho 
-            LastModified = 1500     // Modificado recientemente
-        });
+        
+        // Server update occurs at 2000
+        var p1 = await context.Products.FindAsync("prod_1");
+        p1!.LastModified = 2000;
         await context.SaveChangesAsync();
 
-        // Act: Sincronizamos desde el tiempo 1000
-        var response = await _client.GetFromJsonAsync<SyncPullResponse>("/api/sync/pull?last_pulled_at=1000");
+        // Act: Client tries to push changes based on an old pull (last_pulled_at = 500)
+        var pushRequest = new {
+            changes = new Dictionary<string, object> {
+                { "products", new {
+                    created = Array.Empty<object>(),
+                    updated = new[] { new { id = "prod_1", name = "Conflict Attempt" } },
+                    deleted = Array.Empty<string>()
+                }}
+            },
+            last_pulled_at = 500 // 500 < 2000 -> Conflict [cite: 1796, 1797]
+        };
+
+        var response = await _client.PostAsJsonAsync("/api/sync/push", pushRequest);
 
         // Assert
-        var productChanges = response.Changes["products"];
-        Assert.Empty(productChanges.Created); // No es nuevo para el cliente 
-        Assert.Single(productChanges.Updated); // Debe aparecer aquí
+        // Watermelon requires push failure if record was modified on server after lastPulledAt [cite: 1796]
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
     }
 }

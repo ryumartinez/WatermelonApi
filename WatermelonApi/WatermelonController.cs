@@ -8,7 +8,9 @@ public class WatermelonController(WatermelonService dbService) : ControllerBase
 {
     
     [HttpGet("pull")]
-    public async Task<ActionResult> Pull([FromQuery] long lastPulledAt, [FromQuery] bool turbo = false)
+    public async Task<ActionResult> Pull(
+        [FromQuery(Name = "last_pulled_at")] long lastPulledAt,
+        [FromQuery] bool turbo = false)
     {
         var response = await dbService.GetPullChangesAsync(lastPulledAt, turbo);
         

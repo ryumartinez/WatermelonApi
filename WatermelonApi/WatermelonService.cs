@@ -8,28 +8,33 @@ public class WatermelonService(AppDbContext context)
 {
     public async Task<SyncPullResponse> GetPullChangesAsync(long lastPulledAt, bool requestTurbo = false)
     {
+
         long serverTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         bool isFirstSync = lastPulledAt == 0;
 
-        // Standard logic to fetch changes
-        var changes = await context.Products
+        var allChanges = await context.Products
             .Where(p => isFirstSync || p.LastModified > lastPulledAt)
             .ToListAsync();
 
+
         var tableChanges = new TableChanges(
-            Created: changes.Where(p => !p.IsDeleted).Cast<object>().ToList(),
-            Updated: new List<object>(), // Turbo syncs shouldn't have updates/deletes 
-            Deleted: new List<string>()
+            Created: allChanges
+                .Where(p => !p.IsDeleted && (isFirstSync || p.ServerCreatedAt > lastPulledAt))
+                .Cast<object>().ToList(),
+            Updated: allChanges
+                .Where(p => !p.IsDeleted && !isFirstSync && p.ServerCreatedAt <= lastPulledAt)
+                .Cast<object>().ToList(),
+            Deleted: allChanges
+                .Where(p => p.IsDeleted)
+                .Select(p => p.Id).ToList()
         );
 
         var responseData = new Dictionary<string, TableChanges> { { "products", tableChanges } };
 
         if (isFirstSync && requestTurbo)
         {
-            // For Turbo Login, we return the data serialized as a string 
             var syncObj = new { changes = responseData, timestamp = serverTimestamp };
             string rawJson = System.Text.Json.JsonSerializer.Serialize(syncObj);
-        
             return new SyncPullResponse(null, serverTimestamp, rawJson);
         }
 

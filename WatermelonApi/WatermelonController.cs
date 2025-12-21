@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
-using WatermelonApi;
+
+namespace WatermelonApi;
 
 [ApiController]
 [Route("api/sync")]
@@ -15,9 +16,9 @@ public class WatermelonController(WatermelonService dbService) : ControllerBase
     }
 
     [HttpGet("pull")]
-    public async Task<ActionResult<SyncPullResponse>> Pull([FromQuery] long last_pulled_at)
+    public async Task<ActionResult<SyncPullResponse>> Pull([FromQuery] long lastPulledAt)
     {
-        var response = await dbService.GetPullChangesAsync(last_pulled_at);
+        var response = await dbService.GetPullChangesAsync(lastPulledAt);
         return Ok(response);
     }
 

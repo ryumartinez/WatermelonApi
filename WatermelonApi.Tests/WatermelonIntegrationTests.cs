@@ -1,5 +1,6 @@
 ﻿using System.Net;
 using System.Net.Http.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -24,6 +25,54 @@ public class WatermelonIntegrationTests(WatermelonApiFactory factory) : IClassFi
             ServerCreatedAt = 1000 
         });
         await context.SaveChangesAsync();
+    }
+    
+    [Fact]
+    public async Task SeedDb_ReturnsValidSqliteFile_WithCorrectData()
+    {
+        // 1. Arrange: Ensure the SQL Server has data to export
+        await ResetAndSeedDatabase(); // Creates "prod_1"
+
+        // 2. Act: Request the initial database file
+        var response = await _client.GetAsync("/api/sync/seed-db");
+
+        // 3. Assert: Basic HTTP checks
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/x-sqlite3", response.Content.Headers.ContentType?.MediaType);
+
+        var fileBytes = await response.Content.ReadAsByteArrayAsync();
+        Assert.True(fileBytes.Length > 0, "The generated SQLite file is empty.");
+
+        // 4. Advanced Assert: Verify the internal SQLite content
+        // We save the bytes to a temp file so we can open it with SqliteConnection
+        var tempFile = Path.GetTempFileName();
+        await File.WriteAllBytesAsync(tempFile, fileBytes);
+
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={tempFile}");
+            await connection.OpenAsync();
+
+            // Verify user_version (must match WatermelonDB appSchema version)
+            using var versionCmd = new SqliteCommand("PRAGMA user_version;", connection);
+            var version = Convert.ToInt32(await versionCmd.ExecuteScalarAsync());
+            Assert.Equal(1, version);
+
+            // Verify the products table exists and has our seeded record
+            using var countCmd = new SqliteCommand("SELECT COUNT(*) FROM products WHERE id = 'prod_1';", connection);
+            var count = Convert.ToInt32(await countCmd.ExecuteScalarAsync());
+        
+            Assert.Equal(1, count);
+
+            // Verify WatermelonDB specific columns
+            using var statusCmd = new SqliteCommand("SELECT _status FROM products WHERE id = 'prod_1';", connection);
+            var status = (string?)await statusCmd.ExecuteScalarAsync();
+            Assert.Equal("synced", status);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
     }
 
     [Fact]

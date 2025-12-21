@@ -63,7 +63,7 @@ async Task SeedData(AppDbContext context)
     Console.WriteLine("Seeding 100,000 enterprise-grade products...");
     
     var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    var products = new List<Product>();
+    var products = new List<WatermelonProduct>();
 
     for (int i = 1; i <= 100000; i++)
     {
@@ -74,7 +74,7 @@ async Task SeedData(AppDbContext context)
         
         var productName = $"{adjectives[random.Next(adjectives.Length)]} {brand.Item2} {categories[random.Next(categories.Length)]}";
         
-        products.Add(new Product
+        products.Add(new WatermelonProduct
         {
             Id = Guid.NewGuid().ToString(),
             Name = $"{productName} {i}",

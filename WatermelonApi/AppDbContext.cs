@@ -6,11 +6,11 @@ public class AppDbContext : DbContext
 {
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
-    public DbSet<Product> Products => Set<Product>();
+    public DbSet<WatermelonProduct> Products => Set<WatermelonProduct>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Product>().HasKey(p => p.Id);
-        modelBuilder.Entity<Product>().HasIndex(p => p.LastModified);
+        modelBuilder.Entity<WatermelonProduct>().HasKey(p => p.Id);
+        modelBuilder.Entity<WatermelonProduct>().HasIndex(p => p.LastModified);
     }
 }

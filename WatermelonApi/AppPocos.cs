@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace WatermelonApi;
 
-public class Product
+public class WatermelonProduct
 {
     // WatermelonDB Metadata (Required)
     public string Id { get; set; } = Guid.NewGuid().ToString(); // Remote ID

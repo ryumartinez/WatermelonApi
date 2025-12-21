@@ -118,14 +118,14 @@ public class WatermelonService(AppDbContext context, ILogger<WatermelonService> 
         }
     }
 
-    private Product CreateNewProduct(string id, Dictionary<string, object> raw, long now)
+    private WatermelonProduct CreateNewProduct(string id, Dictionary<string, object> raw, long now)
     {
-        var p = new Product { Id = id, ServerCreatedAt = now };
+        var p = new WatermelonProduct { Id = id, ServerCreatedAt = now };
         UpdateProductFields(p, raw, now);
         return p;
     }
 
-    private void UpdateProductFields(Product p, Dictionary<string, object> raw, long now)
+    private void UpdateProductFields(WatermelonProduct p, Dictionary<string, object> raw, long now)
     {
         p.Name = GetStr(raw, "name");
         p.ItemId = GetStr(raw, "item_id");

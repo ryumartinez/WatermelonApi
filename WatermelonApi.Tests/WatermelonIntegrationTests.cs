@@ -26,7 +26,7 @@ public class WatermelonIntegrationTests(WatermelonApiFactory factory, ITestOutpu
         await context.Database.EnsureDeletedAsync();
         await context.Database.EnsureCreatedAsync();
 
-        var initialProduct = new Product { 
+        var initialProduct = new WatermelonProduct { 
             Id = "prod_1", 
             Name = "Initial Product", 
             ItemId = "ITEM-001",

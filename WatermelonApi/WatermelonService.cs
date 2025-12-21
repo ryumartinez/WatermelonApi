@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -15,9 +16,10 @@ public class WatermelonService(AppDbContext context)
         using var pragma = new SqliteCommand("PRAGMA user_version = 1;", connection);
         await pragma.ExecuteNonQueryAsync();
 
+        // 1. Updated price type to TEXT in the schema
         using var createTable = new SqliteCommand(@"
             CREATE TABLE products (
-                id TEXT PRIMARY KEY, name TEXT, price REAL, sku TEXT, 
+                id TEXT PRIMARY KEY, name TEXT, price TEXT, sku TEXT, 
                 _status TEXT, _changed TEXT, created_at INTEGER, updated_at INTEGER
             );", connection);
         await createTable.ExecuteNonQueryAsync();
@@ -35,7 +37,11 @@ public class WatermelonService(AppDbContext context)
         {
             parameters["$id"].Value = p.Id;
             parameters["$name"].Value = p.Name ?? (object)DBNull.Value;
-            parameters["$price"].Value = p.Price;
+            
+            // 2. Explicitly convert price to string. 
+            // Using InvariantCulture ensures the decimal separator is always a dot (.)
+            parameters["$price"].Value = p.Price.ToString(CultureInfo.InvariantCulture);
+            
             parameters["$sku"].Value = p.Sku ?? (object)DBNull.Value;
             parameters["$at"].Value = p.LastModified;
             await insert.ExecuteNonQueryAsync();

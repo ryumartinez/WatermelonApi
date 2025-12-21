@@ -16,7 +16,12 @@ await dbContainer.StartAsync();
 var connectionString = dbContainer.GetConnectionString();
 
 // 2. Register Services using the Container's Connection String
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // WatermelonDB requires names to match the Schema (usually snake_case) [cite: 1270, 1293]
+        options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+    });
 builder.Services.AddDbContext<AppDbContext>(opt => 
     opt.UseSqlServer(connectionString));
 

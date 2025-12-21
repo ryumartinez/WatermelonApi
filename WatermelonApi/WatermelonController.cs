@@ -1,11 +1,9 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-
-namespace WatermelonApi;
+using WatermelonApi;
 
 [ApiController]
 [Route("api/sync")]
-public class WatermelonController(AppDbContext context, WatermelonService dbService) : ControllerBase
+public class WatermelonController(WatermelonService dbService) : ControllerBase
 {
     [HttpGet("seed-db")]
     public async Task<IActionResult> SeedDatabase()
@@ -19,36 +17,25 @@ public class WatermelonController(AppDbContext context, WatermelonService dbServ
     [HttpGet("pull")]
     public async Task<ActionResult<SyncPullResponse>> Pull([FromQuery] long last_pulled_at)
     {
-        long serverTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        
-        var changes = await context.Products
-            .Where(p => p.LastModified > last_pulled_at)
-            .ToListAsync();
-
-        var tableChanges = new TableChanges(
-            Created: changes.Where(p => !p.IsDeleted && p.ServerCreatedAt > last_pulled_at).Cast<object>().ToList(),
-            Updated: changes.Where(p => !p.IsDeleted && p.ServerCreatedAt <= last_pulled_at).Cast<object>().ToList(),
-            Deleted: changes.Where(p => p.IsDeleted).Select(p => p.Id).ToList()
-        );
-
-        return Ok(new SyncPullResponse(new() { { "products", tableChanges } }, serverTimestamp));
+        var response = await dbService.GetPullChangesAsync(last_pulled_at);
+        return Ok(response);
     }
 
     [HttpPost("push")]
     public async Task<IActionResult> Push([FromBody] SyncPushRequest request)
     {
-        using var tx = await context.Database.BeginTransactionAsync();
-        try {
-            if (request.Changes.TryGetValue("products", out var productChanges))
-            {
-                long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            }
-            await context.SaveChangesAsync();
-            await tx.CommitAsync();
+        try 
+        {
+            await dbService.ProcessPushChangesAsync(request);
             return Ok(new { ok = true });
-        } catch {
-            await tx.RollbackAsync();
-            return BadRequest();
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "CONFLICT")
+        {
+            return Conflict(new { error = "Server has newer changes. Please pull first." });
+        }
+        catch (Exception)
+        {
+            return BadRequest(new { error = "Sync failed. Batch rolled back." });
         }
     }
 }

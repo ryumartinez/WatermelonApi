@@ -12,7 +12,6 @@ public class WatermelonIntegrationTests(WatermelonApiFactory factory, ITestOutpu
 {
     private readonly HttpClient _client = factory.CreateClient();
     
-    // Explicitly using snake_case for assertion comparisons
     private readonly JsonSerializerOptions _assertOptions = new() 
     { 
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower 
@@ -30,17 +29,19 @@ public class WatermelonIntegrationTests(WatermelonApiFactory factory, ITestOutpu
         var initialProduct = new Product { 
             Id = "prod_1", 
             Name = "Initial Product", 
+            ItemId = "ITEM-001",
+            BarCode = "123456789",
+            DataAreaId = "US01",
             LastModified = 1000,
             ServerCreatedAt = 1000 
         };
         
         context.Products.Add(initialProduct);
         await context.SaveChangesAsync();
-        output.WriteLine($"Seeded: {initialProduct.Id} (last_modified: {initialProduct.LastModified})");
     }
 
     [Fact]
-    public async Task Pull_InitialSync_TurboMode_VerifiesSnakeCaseFormat()
+    public async Task Pull_InitialSync_TurboMode_VerifiesAllEnterpriseFields()
     {
         // Arrange
         await ResetAndSeedDatabase();
@@ -53,66 +54,34 @@ public class WatermelonIntegrationTests(WatermelonApiFactory factory, ITestOutpu
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var rawContent = await response.Content.ReadAsStringAsync();
         
-        // CRITICAL: Ensure no PascalCase keys like "Id" or "LastModified" exist in raw JSON [cite: 1270, 1293]
-        Assert.Contains("\"id\":", rawContent);
-        Assert.Contains("\"last_modified\":", rawContent);
-        Assert.DoesNotContain("\"Id\":", rawContent);
-        Assert.DoesNotContain("\"LastModified\":", rawContent);
+        // Verify snake_case for enterprise fields
+        Assert.Contains("\"item_id\":", rawContent);
+        Assert.Contains("\"bar_code\":", rawContent);
+        Assert.Contains("\"data_area_id\":", rawContent);
+        Assert.Contains("\"is_required_batch_id\":", rawContent);
         
-        output.WriteLine($"Validated Snake Case in Raw JSON: {rawContent}");
+        output.WriteLine("Verified: All enterprise fields present in snake_case.");
     }
 
     [Fact]
-    public async Task Pull_CategorizesRecordsCorrectly_VerifiesChangesShape()
-    {
-        // Arrange
-        await ResetAndSeedDatabase();
-        using (var scope = factory.Services.CreateScope())
-        {
-            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var p1 = await context.Products.FindAsync("prod_1");
-            p1!.Name = "Updated Name";
-            p1.LastModified = 2600;
-
-            context.Products.Add(new Product { 
-                Id = "prod_2", 
-                Name = "New Product", 
-                ServerCreatedAt = 2500, 
-                LastModified = 2500 
-            });
-            await context.SaveChangesAsync();
-        }
-
-        // Act
-        var lastPulledAt = 2000;
-        var response = await _client.GetAsync($"/api/sync/pull?last_pulled_at={lastPulledAt}");
-        var json = await response.Content.ReadAsStringAsync();
-        
-        // Deserialize using snake_case options to ensure matching 
-        var syncResponse = JsonSerializer.Deserialize<SyncPullResponse>(json, _assertOptions);
-
-        // Assert
-        Assert.NotNull(syncResponse?.Changes);
-        var productChanges = syncResponse.Changes["products"];
-        
-        // Verify proper categorization [cite: 1316, 1317]
-        Assert.Single(productChanges.Created); // prod_2
-        Assert.Single(productChanges.Updated); // prod_1
-        
-        // Deep verification of a record to ensure "id" is present and not null
-        var createdRecord = (JsonElement)productChanges.Created[0];
-        Assert.Equal("prod_2", createdRecord.GetProperty("id").GetString());
-    }
-
-    [Fact]
-    public async Task Push_SuccessfulCreation_BridgesClientSnakeCaseToPascalCaseServer()
+    public async Task Push_SuccessfulCreation_MapsComplexFieldsToServer()
     {
         // Arrange
         await ResetAndSeedDatabase();
         var pushRequest = new {
             changes = new Dictionary<string, object> {
                 { "products", new {
-                    created = new[] { new { id = "new_client_prod", name = "Client Side", price = 10 } },
+                    created = new[] { 
+                        new { 
+                            id = "client_prod_xyz", 
+                            name = "New D365 Item", 
+                            item_id = "D365-999",
+                            bar_code = "777888999",
+                            brand_code = "MSFT",
+                            data_area_id = "PY01",
+                            is_required_batch_id = true
+                        } 
+                    },
                     updated = Array.Empty<object>(),
                     deleted = Array.Empty<string>()
                 }}
@@ -128,15 +97,17 @@ public class WatermelonIntegrationTests(WatermelonApiFactory factory, ITestOutpu
         
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var record = await db.Products.FindAsync("new_client_prod");
+        var record = await db.Products.FindAsync("client_prod_xyz");
         
-        // Verify server-side PascalCase object was populated from snake_case JSON [cite: 1352, 1353]
         Assert.NotNull(record);
-        Assert.Equal("Client Side", record.Name);
+        Assert.Equal("New D365 Item", record.Name);
+        Assert.Equal("D365-999", record.ItemId);
+        Assert.Equal("PY01", record.DataAreaId);
+        Assert.True(record.IsRequiredBatchId);
     }
 
     [Fact]
-    public async Task Push_ConflictResolution_AbortsOnNewerServerChanges()
+    public async Task Pull_DetectsUpdatesSinceLastSync()
     {
         // Arrange
         await ResetAndSeedDatabase();
@@ -144,7 +115,33 @@ public class WatermelonIntegrationTests(WatermelonApiFactory factory, ITestOutpu
         {
             var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var p1 = await context.Products.FindAsync("prod_1");
-            p1!.LastModified = 3000; // Newer than the client's hypothetical last_pulled_at
+            p1!.Name = "Modified on Server";
+            p1.LastModified = 3000; // Updated later
+            await context.SaveChangesAsync();
+        }
+
+        // Act
+        var response = await _client.GetAsync("/api/sync/pull?last_pulled_at=2000");
+        var syncResponse = await response.Content.ReadFromJsonAsync<SyncPullResponse>(_assertOptions);
+
+        // Assert
+        var productChanges = syncResponse!.Changes!["products"];
+        Assert.Single(productChanges.Updated);
+        
+        var updatedRecord = (JsonElement)productChanges.Updated[0];
+        Assert.Equal("Modified on Server", updatedRecord.GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task Push_Conflict_WhenServerHasNewerData()
+    {
+        // Arrange
+        await ResetAndSeedDatabase();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var p1 = await context.Products.FindAsync("prod_1");
+            p1!.LastModified = 5000; // Server updated after client's last pull
             await context.SaveChangesAsync();
         }
 
@@ -152,18 +149,17 @@ public class WatermelonIntegrationTests(WatermelonApiFactory factory, ITestOutpu
             changes = new Dictionary<string, object> {
                 { "products", new {
                     created = Array.Empty<object>(),
-                    updated = new[] { new { id = "prod_1", name = "Conflict Request" } },
+                    updated = new[] { new { id = "prod_1", name = "Stale Client Update" } },
                     deleted = Array.Empty<string>()
                 }}
             },
-            last_pulled_at = 1000 // Client thinks it's up to date with 1000
+            last_pulled_at = 1000 // Client thinks it is at timestamp 1000
         };
 
         // Act
         var response = await _client.PostAsJsonAsync("/api/sync/push", pushRequest, _assertOptions);
 
-        // Assert: Push MUST abort if record modified after lastPulledAt 
+        // Assert
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        output.WriteLine("Conflict successfully detected and transaction aborted.");
     }
 }

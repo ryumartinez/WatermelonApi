@@ -6,6 +6,16 @@ namespace WatermelonApi;
 [Route("api/sync")]
 public class WatermelonController(WatermelonService dbService) : ControllerBase
 {
+    [HttpGet("seed-database")]
+    public async Task<IActionResult> GetTurboSync()
+    {
+        byte[] fileData = await dbService.GenerateSqliteSyncFileAsync();
+        return File(
+            fileData, 
+            "application/x-sqlite3", 
+            $"sync_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.db"
+        );
+    }
     
     [HttpGet("pull")]
     public async Task<ActionResult> Pull(

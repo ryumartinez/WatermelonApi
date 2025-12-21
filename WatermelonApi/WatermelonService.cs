@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -11,6 +12,105 @@ public class WatermelonService(AppDbContext context, ILogger<WatermelonService> 
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     };
+    
+    public async Task<byte[]> GenerateSqliteSyncFileAsync()
+{
+    var tempPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.db");
+    var connectionString = new SqliteConnectionStringBuilder { DataSource = tempPath }.ToString();
+
+    try
+    {
+        using (var sqliteConn = new SqliteConnection(connectionString))
+        {
+            await sqliteConn.OpenAsync();
+
+            // 1. Optimize SQLite for bulk insertion
+            using (var pragmaCmd = sqliteConn.CreateCommand())
+            {
+                pragmaCmd.CommandText = "PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;";
+                await pragmaCmd.ExecuteNonQueryAsync();
+            }
+
+            // 2. Create Schema (Adjust field types to match WatermelonDB expectations)
+            using (var createCmd = sqliteConn.CreateCommand())
+            {
+                createCmd.CommandText = @"
+                    CREATE TABLE products (
+                        id TEXT PRIMARY KEY,
+                        name TEXT,
+                        item_id TEXT,
+                        bar_code TEXT,
+                        brand_code TEXT,
+                        brand_name TEXT,
+                        color_code TEXT,
+                        color_name TEXT,
+                        size_code TEXT,
+                        size_name TEXT,
+                        unit TEXT,
+                        data_area_id TEXT,
+                        invent_dim_id TEXT,
+                        is_required_batch_id INTEGER,
+                        last_modified INTEGER,
+                        server_created_at INTEGER,
+                        is_deleted INTEGER
+                    );";
+                await createCmd.ExecuteNonQueryAsync();
+            }
+
+            // 3. Fetch data and Insert
+            var products = await context.Products.AsNoTracking().Where(p => !p.IsDeleted).ToListAsync();
+
+            using var transaction = sqliteConn.BeginTransaction();
+            var insertCmd = sqliteConn.CreateCommand();
+            insertCmd.CommandText = @"
+                INSERT INTO products (id, name, item_id, bar_code, brand_code, brand_name, color_code, color_name, 
+                                     size_code, size_name, unit, data_area_id, invent_dim_id, 
+                                     is_required_batch_id, last_modified, server_created_at, is_deleted)
+                VALUES ($id, $name, $item_id, $bar_code, $brand_code, $brand_name, $color_code, $color_name, 
+                        $size_code, $size_name, $unit, $data_area_id, $invent_dim_id, 
+                        $is_required_batch_id, $last_modified, $server_created_at, $is_deleted)";
+
+            // Define parameters once for performance
+            var parameters = new[] {
+                "$id", "$name", "$item_id", "$bar_code", "$brand_code", "$brand_name", "$color_code", "$color_name",
+                "$size_code", "$size_name", "$unit", "$data_area_id", "$invent_dim_id", 
+                "$is_required_batch_id", "$last_modified", "$server_created_at", "$is_deleted"
+            }.ToDictionary(p => p, p => insertCmd.Parameters.Add(p, SqliteType.Text));
+
+            foreach (var p in products)
+            {
+                parameters["$id"].Value = p.Id;
+                parameters["$name"].Value = p.Name ?? (object)DBNull.Value;
+                parameters["$item_id"].Value = p.ItemId ?? (object)DBNull.Value;
+                parameters["$bar_code"].Value = p.BarCode ?? (object)DBNull.Value;
+                parameters["$brand_code"].Value = p.BrandCode ?? (object)DBNull.Value;
+                parameters["$brand_name"].Value = p.BrandName ?? (object)DBNull.Value;
+                parameters["$color_code"].Value = p.ColorCode ?? (object)DBNull.Value;
+                parameters["$color_name"].Value = p.ColorName ?? (object)DBNull.Value;
+                parameters["$size_code"].Value = p.SizeCode ?? (object)DBNull.Value;
+                parameters["$size_name"].Value = p.SizeName ?? (object)DBNull.Value;
+                parameters["$unit"].Value = p.Unit ?? (object)DBNull.Value;
+                parameters["$data_area_id"].Value = p.DataAreaId ?? (object)DBNull.Value;
+                parameters["$invent_dim_id"].Value = p.InventDimId ?? (object)DBNull.Value;
+                parameters["$is_required_batch_id"].Value = p.IsRequiredBatchId ? 1 : 0;
+                parameters["$last_modified"].Value = p.LastModified;
+                parameters["$server_created_at"].Value = p.ServerCreatedAt;
+                parameters["$is_deleted"].Value = 0;
+
+                await insertCmd.ExecuteNonQueryAsync();
+            }
+            await transaction.CommitAsync();
+        }
+
+        // 4. Read file into memory and clean up
+        byte[] fileBytes = await File.ReadAllBytesAsync(tempPath);
+        return fileBytes;
+    }
+    finally
+    {
+        if (File.Exists(tempPath)) File.Delete(tempPath);
+    }
+}
 
     public async Task<SyncPullResponse> GetPullChangesAsync(long lastPulledAt, bool requestTurbo = false)
     {

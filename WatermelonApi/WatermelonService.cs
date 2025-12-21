@@ -6,66 +6,34 @@ namespace WatermelonApi;
 
 public class WatermelonService(AppDbContext context)
 {
-    // Logic for Initial SQLite File Generation
-    public async Task<string> CreateInitialDatabaseAsync()
-    {
-        var dbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.db");
-        using var connection = new SqliteConnection($"Data Source={dbPath}");
-        await connection.OpenAsync();
-
-        using var pragma = new SqliteCommand("PRAGMA user_version = 1;", connection);
-        await pragma.ExecuteNonQueryAsync();
-
-        // 1. Updated price type to TEXT in the schema
-        using var createTable = new SqliteCommand(@"
-            CREATE TABLE products (
-                id TEXT PRIMARY KEY, name TEXT, price TEXT, sku TEXT, 
-                _status TEXT, _changed TEXT, created_at INTEGER, updated_at INTEGER
-            );", connection);
-        await createTable.ExecuteNonQueryAsync();
-
-        var products = await context.Products.Where(p => !p.IsDeleted).ToListAsync();
-        using var transaction = connection.BeginTransaction();
-        var insert = connection.CreateCommand();
-        insert.CommandText = "INSERT INTO products (id, name, price, sku, _status, _changed, created_at, updated_at) " +
-                             "VALUES ($id, $name, $price, $sku, 'synced', '', $at, $at)";
-
-        var parameters = new[] { "$id", "$name", "$price", "$sku", "$at" }
-            .ToDictionary(p => p, p => insert.Parameters.Add(p, SqliteType.Text));
-
-        foreach (var p in products)
-        {
-            parameters["$id"].Value = p.Id;
-            parameters["$name"].Value = p.Name ?? (object)DBNull.Value;
-            
-            // 2. Explicitly convert price to string. 
-            // Using InvariantCulture ensures the decimal separator is always a dot (.)
-            parameters["$price"].Value = p.Price.ToString(CultureInfo.InvariantCulture);
-            
-            parameters["$sku"].Value = p.Sku ?? (object)DBNull.Value;
-            parameters["$at"].Value = p.LastModified;
-            await insert.ExecuteNonQueryAsync();
-        }
-        await transaction.CommitAsync();
-        return dbPath;
-    }
-    
-    public async Task<SyncPullResponse> GetPullChangesAsync(long lastPulledAt)
+    public async Task<SyncPullResponse> GetPullChangesAsync(long lastPulledAt, bool requestTurbo = false)
     {
         long serverTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         bool isFirstSync = lastPulledAt == 0;
 
+        // Standard logic to fetch changes
         var changes = await context.Products
-            .Where(p => p.LastModified > lastPulledAt)
+            .Where(p => isFirstSync || p.LastModified > lastPulledAt)
             .ToListAsync();
 
         var tableChanges = new TableChanges(
-            Created: changes.Where(p => !p.IsDeleted && (isFirstSync || p.ServerCreatedAt > lastPulledAt)).Cast<object>().ToList(),
-            Updated: changes.Where(p => !p.IsDeleted && !isFirstSync && p.ServerCreatedAt <= lastPulledAt).Cast<object>().ToList(),
-            Deleted: changes.Where(p => p.IsDeleted).Select(p => p.Id).ToList()
+            Created: changes.Where(p => !p.IsDeleted).Cast<object>().ToList(),
+            Updated: new List<object>(), // Turbo syncs shouldn't have updates/deletes 
+            Deleted: new List<string>()
         );
 
-        return new SyncPullResponse(new() { { "products", tableChanges } }, serverTimestamp);
+        var responseData = new Dictionary<string, TableChanges> { { "products", tableChanges } };
+
+        if (isFirstSync && requestTurbo)
+        {
+            // For Turbo Login, we return the data serialized as a string 
+            var syncObj = new { changes = responseData, timestamp = serverTimestamp };
+            string rawJson = System.Text.Json.JsonSerializer.Serialize(syncObj);
+        
+            return new SyncPullResponse(null, serverTimestamp, rawJson);
+        }
+
+        return new SyncPullResponse(responseData, serverTimestamp);
     }
     
     public async Task ProcessPushChangesAsync(SyncPushRequest request)

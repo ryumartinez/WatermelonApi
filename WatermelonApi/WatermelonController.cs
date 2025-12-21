@@ -6,19 +6,17 @@ namespace WatermelonApi;
 [Route("api/sync")]
 public class WatermelonController(WatermelonService dbService) : ControllerBase
 {
-    [HttpGet("seed-db")]
-    public async Task<IActionResult> SeedDatabase()
-    {
-        var path = await dbService.CreateInitialDatabaseAsync();
-        var bytes = await System.IO.File.ReadAllBytesAsync(path);
-        System.IO.File.Delete(path);
-        return File(bytes, "application/x-sqlite3", "initial.db");
-    }
-
+    
     [HttpGet("pull")]
-    public async Task<ActionResult<SyncPullResponse>> Pull([FromQuery] long lastPulledAt)
+    public async Task<ActionResult> Pull([FromQuery] long lastPulledAt, [FromQuery] bool turbo = false)
     {
-        var response = await dbService.GetPullChangesAsync(lastPulledAt);
+        var response = await dbService.GetPullChangesAsync(lastPulledAt, turbo);
+        
+        if (response.SyncJson != null)
+        {
+            return Content(response.SyncJson, "application/json");
+        }
+    
         return Ok(response);
     }
 

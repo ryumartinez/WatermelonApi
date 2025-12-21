@@ -15,8 +15,9 @@ public class Product
 }
 
 public record SyncPullResponse(
-    [property: JsonPropertyName("changes")] Dictionary<string, TableChanges> Changes,
-    [property: JsonPropertyName("timestamp")] long Timestamp
+    Dictionary<string, TableChanges>? Changes, 
+    long Timestamp,
+    string? SyncJson = null
 );
 
 public record TableChanges(

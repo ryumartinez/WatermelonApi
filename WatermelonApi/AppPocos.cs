@@ -5,7 +5,7 @@ namespace WatermelonApi;
 public class WatermelonProduct
 {
     // WatermelonDB Metadata (Required)
-    public string Id { get; set; } = Guid.NewGuid().ToString(); // Remote ID
+    public string Id { get; set; } = Guid.NewGuid().ToString();
     public long LastModified { get; set; } 
     public long ServerCreatedAt { get; set; } 
     public bool IsDeleted { get; set; }
@@ -24,6 +24,23 @@ public class WatermelonProduct
     public string DataAreaId { get; set; } = string.Empty;
     public string InventDimId { get; set; } = string.Empty;
     public bool IsRequiredBatchId { get; set; }
+}
+
+public class WatermelonProductBatch
+{
+    // WatermelonDB Metadata (Required)
+    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public long LastModified { get; set; } 
+    public long ServerCreatedAt { get; set; } 
+    public bool IsDeleted { get; set; }
+
+    // Your Business Fields
+    public string DataAreaId { get; set; } = string.Empty;
+    public string ItemNumber { get; set; } = string.Empty;
+    public string BatchNumber { get; set; } = string.Empty;
+    public string? VendorBatchNumber { get; set; }
+    public long? VendorExpirationDate { get; set; }
+    public long? BatchExpirationDate { get; set; } 
 }
 
 public record SyncPullResponse(

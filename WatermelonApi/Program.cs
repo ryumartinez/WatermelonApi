@@ -101,7 +101,7 @@ async Task SeedData(AppDbContext context)
         }
     }
 
-    // 2. Seed Product Batches (30,000)
+// 2. Seed Product Batches (30,000)
     if (!await context.ProductBatches.AnyAsync())
     {
         Console.WriteLine("Seeding 30,000 product batches...");
@@ -111,7 +111,7 @@ async Task SeedData(AppDbContext context)
         {
             // Create a future expiration date (between 30 and 365 days from now)
             var expiryDate = DateTimeOffset.UtcNow.AddDays(random.Next(30, 365)).ToUnixTimeMilliseconds();
-            
+        
             batches.Add(new WatermelonProductBatch
             {
                 Id = Guid.NewGuid().ToString(),
@@ -122,10 +122,13 @@ async Task SeedData(AppDbContext context)
                 BatchExpirationDate = expiryDate,
                 VendorExpirationDate = expiryDate,
                 LastModified = now,
-                ServerCreatedAt = now,
-                IsDeleted = false
+                IsDeleted = false,
+                // Status and Changed are typically null for freshly seeded server records
+                Status = null,
+                Changed = null
             });
 
+            // Batch insert to prevent memory issues and improve performance
             if (i % 5000 == 0)
             {
                 await context.ProductBatches.AddRangeAsync(batches);
